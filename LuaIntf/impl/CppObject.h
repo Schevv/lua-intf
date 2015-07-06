@@ -45,6 +45,17 @@ using CppClassSignature = CppSignature<T, 1>;
 template <typename T>
 using CppConstSignature = CppSignature<T, 2>;
 
+template <typename T>
+struct LuaAutomaticDowncast;
+
+template <typename T>
+struct LuaAutomaticDowncastExists
+{
+    using Type = decltype(LuaTypeExists::test<LuaAutomaticDowncast<T>>(0));
+    static constexpr bool value = Type::value;
+};
+
+
 //--------------------------------------------------------------------------
 
 /**
@@ -225,12 +236,21 @@ public:
     }
 
     template <typename T>
-    static void pushToStack(lua_State* L, T* obj, bool is_const)
+    static typename std::enable_if<!LuaAutomaticDowncastExists<T>::value>::type pushToStack(lua_State* L, T* obj, bool is_const)
     {
         void* mem = allocate<CppObjectPtr, T>(L, is_const);
         ::new (mem) CppObjectPtr(obj);
     }
 
+    template <typename T>
+	static typename std::enable_if<LuaAutomaticDowncastExists<T>::value>::type pushToStack(lua_State* L, T* obj, bool is_const)
+    {
+        void* mem = allocate<CppObjectPtr, T>(L, is_const);
+        lua_rawgetp(L, LUA_REGISTRYINDEX, LuaAutomaticDowncast<T>::getClassID(obj, is_const));
+        luaL_checktype(L, -1, LUA_TTABLE);
+        lua_setmetatable(L, -2);
+        ::new (mem) CppObjectPtr(obj);
+    }
 private:
     void* m_ptr;
 };
@@ -242,7 +262,7 @@ private:
  *
  * The template argument SP is the smart pointer type
  */
-template <typename SP, typename T>
+template <typename SP, typename T, typename Enable = void>
 class CppObjectSharedPtr : public CppObject
 {
 private:
@@ -279,6 +299,61 @@ public:
     static void pushToStack(lua_State* L, const SP& sp, bool is_const)
     {
         void* mem = allocate<CppObjectSharedPtr<SP, T>, T>(L, is_const);
+        ::new (mem) CppObjectSharedPtr<SP, T>(sp);
+    }
+
+private:
+    SP m_sp;
+};
+
+/**
+ * Wraps a shared ptr that references a class object.
+ *
+ * The template argument SP is the smart pointer type
+ */
+template <typename SP, typename T>
+class CppObjectSharedPtr<SP, T, typename std::enable_if<LuaAutomaticDowncastExists<T>::value>::type> : public CppObject
+{
+private:
+    explicit CppObjectSharedPtr(T* obj)
+        : m_sp(obj)
+        {}
+
+    explicit CppObjectSharedPtr(const SP& sp)
+        : m_sp(sp)
+        {}
+
+public:
+    virtual bool isSharedPtr() const override
+    {
+        return true;
+    }
+
+    virtual void* objectPtr() override
+    {
+        return const_cast<T*>(&*m_sp);
+    }
+
+    SP& sharedPtr()
+    {
+        return m_sp;
+    }
+
+    static void pushToStack(lua_State* L, T* obj, bool is_const)
+    {
+        void* mem = allocate<CppObjectSharedPtr<SP, T>, T>(L, is_const);
+        lua_rawgetp(L, LUA_REGISTRYINDEX, LuaAutomaticDowncast<T>::getClassID(obj, is_const));
+        luaL_checktype(L, -1, LUA_TTABLE);
+        lua_setmetatable(L, -2);
+        ::new (mem) CppObjectSharedPtr<SP, T>(obj);
+    }
+
+    static void pushToStack(lua_State* L, const SP& sp, bool is_const)
+    {
+        void* mem = allocate<CppObjectSharedPtr<SP, T>, T>(L, is_const);
+        lua_rawgetp(L, LUA_REGISTRYINDEX, LuaAutomaticDowncast<T>::getClassID(&*sp, is_const));
+        luaL_checktype(L, -1, LUA_TTABLE);
+        lua_setmetatable(L, -2);
         ::new (mem) CppObjectSharedPtr<SP, T>(sp);
     }
 
